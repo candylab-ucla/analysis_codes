@@ -1,0 +1,77 @@
+---
+title: "LCGA_demo"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library("dplyr")
+library("readr")
+library(purrr)
+library(stringr)
+library(parameters)
+library(tidyverse)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+lcgadir <- "/Users/shiyinliu/Desktop/CANDYLab/LCGA"
+baseline_lcga <- read_csv(file.path(lcgadir, "T1_Golden_Demo_TIGER_03.03.22.csv"))
+baseline_lcga_mdd <- baseline_lcga %>% 
+                         filter(Group == "MDD")     
+comos_lcga <- read_csv(file.path(lcgadir, "T1_Dx_MDD_Child&Parent_070121.csv"))
+```
+
+demographics
+
+```{r pressure, echo=FALSE}
+mean(baseline_lcga_mdd$Age.at.V1)
+sd(baseline_lcga_mdd$Age.at.V1)
+
+sum(baseline_lcga_mdd$Sex == 2)
+sum(baseline_lcga_mdd$Gender == 3)
+
+mean(baseline_lcga_mdd$BMI, na.rm = TRUE)
+sd(baseline_lcga_mdd$BMI, na.rm = TRUE)
+
+sum(baseline_lcga_mdd$Ethnicity == 2)
+
+sum(baseline_lcga_mdd$Race == 7)
+
+comos_lcga$anxiety_total = comos_lcga$Panic_Current_P_C + comos_lcga$Social_Current_P_C + comos_lcga$Simple_Current_P_C + comos_lcga$Agoraphobia_Current_P_C + comos_lcga$GAD_Current_P_C
+comos_lcga <- comos_lcga %>%
+  mutate(any_anxiety_dx = if_any(
+    c(Panic_Current_P_C,
+      Social_Current_P_C,
+      Simple_Current_P_C,
+      Agoraphobia_Current_P_C,
+      GAD_Current_P_C),
+    ~ .x %in% c(2, 3, 4)
+  ))
+sum(comos_lcga$any_anxiety_dx==TRUE)
+sum(comos_lcga$Agoraphobia_Current_P_C == 4)
+```
+
+clinical characteristics
+```{r pressure, echo=FALSE}
+mean(baseline_lcga_mdd$CDRSR_total)
+sd(baseline_lcga_mdd$CDRSR_total)
+length(baseline_lcga_mdd$CDRSR_total)
+
+mean(baseline_lcga_mdd$RADS_total)
+sd(baseline_lcga_mdd$RADS_total)
+length(baseline_lcga_mdd$RADS_total)
+
+mean(baseline_lcga_mdd$MASC_total)
+sd(baseline_lcga_mdd$MASC_total)
+length(baseline_lcga_mdd$MASC_total)
+
+sum(baseline_lcga_mdd$Ethnicity == 2)
+
+sum(baseline_lcga_mdd$Race == 7)
+```

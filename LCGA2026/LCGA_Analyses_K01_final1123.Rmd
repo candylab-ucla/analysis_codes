@@ -1,0 +1,568 @@
+---
+title: "LCGA_Analyses_K01_final1123"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library("dplyr")
+library("readr")
+library(purrr)
+library(stringr)
+library(parameters)
+library(tidyverse)
+library(nnet)
+library(broom)
+library(MASS)
+library(corrplot)
+```
+
+read in data, set class, and z-score
+```{r}
+lcgadir <- "/Users/shiyinliu/Desktop/CANDYLab/LCGA"
+merged3 <- read_csv(file.path(lcgadir, "3cluster_merged.csv"))
+
+merged3$cluster_rads <- as.factor(merged3$cluster_rads)
+merged3$cluster_masc <- as.factor(merged3$cluster_masc)
+
+merged3$RADS_baseline <- merged3$RADS_total.x
+merged3$MASC_baseline <- merged3$MASC_total.x
+
+merged3$left_CEN <- merged3$left_CEM
+merged3$SN_insula_parietal <- merged3$salience_insula_parietal
+
+merged3$SN_dACC_z <- scale(merged3$SN_dACC)
+merged3$salience_insula_parietal_z <- scale(merged3$salience_insula_parietal)
+merged3$sgACC_mPFC_z <- scale(merged3$sgACC_mPFC)
+merged3$DMN_PCC_z <- scale(merged3$DMN_PCC)
+merged3$DMN_mPFC_z <- scale(merged3$DMN_mPFC)
+merged3$right_CEN_frontoparietal_z <- scale(merged3$right_CEN_frontoparietal)
+merged3$left_CEN_z <- scale(merged3$left_CEN)
+merged3$parietal_attention_z <- scale(merged3$parietal_attention)
+merged3$limbic_cingulate_z <- scale(merged3$limbic_cingulate)
+
+merged3$L.Uncinate.FA <- as.numeric(merged3$L.Uncinate.FA.T1.mean)
+merged3$L.Cingulum_Cingulate.FA <- as.numeric(merged3$L.Cingulum_Cingulate.FA.T1.mean)
+merged3$R.Cingulum_Cingulate.FA <- as.numeric(merged3$R.Cingulum_Cingulate.FA.T1.mean)
+merged3$L.Uncinate.FA <- as.numeric(merged3$L.Uncinate.FA.T1.mean)
+merged3$R.Uncinate.FA <- as.numeric(merged3$R.Uncinate.FA.T1.mean)
+merged3$Callosum_Forceps_Minor.FA <- as.numeric(merged3$Callosum_Forceps_Minor.FA.T1.mean)
+
+merged3$leftCC_z <- scale(merged3$L.Cingulum_Cingulate.FA.T1.mean)
+merged3$rightCC_z <- scale(merged3$R.Cingulum_Cingulate.FA.T1.mean)
+merged3$leftU_z <- scale(as.numeric(merged3$L.Uncinate.FA.T1.mean))
+merged3$rightU_z <- scale(merged3$R.Uncinate.FA.T1.mean)
+merged3$cfm_z <- scale(merged3$Callosum_Forceps_Minor.FA.T1.mean)
+
+#for supplemental analyses
+merged3$leftCC_ad_z <- scale(merged3$L.Cingulum_Cingulate.AD.T1.mean)
+merged3$leftCC_rd_z <- scale(merged3$L.Cingulum_Cingulate.RD.T1.mean)
+merged3$rightU_ad_z <- scale(merged3$R.Uncinate.AD.T1.mean)
+merged3$rightU_rd_z <- scale(merged3$R.Uncinate.RD.T1.mean)
+
+merged3$Current_Med_Psych <- as.factor(merged3$Current_Med_Psych)
+merged3$COVID <- as.factor(merged3$COVID)
+merged3$sex <- as.factor(merged3$Sex.x)
+```
+
+baseline zero-order correlations 
+```{r}
+vars<-c("RADS_baseline","MASC_baseline","SN_dACC","SN_insula_parietal","sgACC_mPFC","DMN_PCC","DMN_mPFC","right_CEN_frontoparietal","left_CEN","parietal_attention","limbic_cingulate","L.Cingulum_Cingulate.FA","R.Cingulum_Cingulate.FA","L.Uncinate.FA","R.Uncinate.FA","Callosum_Forceps_Minor.FA")
+corrdata<-merged3[vars]
+
+M<-cor(corrdata,method="pearson",use="pairwise.complete.obs") #missing observations dropped automatically per pairwise test
+
+#matrix of the p-value of the correlation
+cor.mtest <- function(mat, ...) {
+  mat <- as.matrix(mat)
+  n <- ncol(mat)
+  p.mat <- matrix(NA, n, n)
+  diag(p.mat) <- 0
+  
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      tmp <- cor.test(mat[, i], mat[, j], ...)
+      p.mat[i, j] <- tmp$p.value
+      p.mat[j, i] <- tmp$p.value
+    }
+  }
+  
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  return(p.mat)
+}
+
+p.mat <-cor.mtest(corrdata)
+
+png("corrplot_figure.png", width = 2500, height = 2000, res = 300)
+corrplot(
+  M,
+  method = "number",
+  type = "upper",
+  order = "hclust",
+  tl.col = "black",
+  tl.cex = 0.8,
+  tl.srt = 45,
+  diag = FALSE,
+  number.cex = 0.7,
+  p.mat = p.mat,
+  sig.level = 0.05,
+  insig = "blank"           # hide non-sig
+)
+dev.off()
+```
+
+ordinal logistic regression
+resting state and depression
+```{r pressure, echo=FALSE}
+regions <- c(
+  "SN_dACC_z",
+  "salience_insula_parietal_z",
+  "sgACC_mPFC_z",
+  "DMN_PCC_z",
+  "DMN_mPFC_z",
+  "right_CEN_frontoparietal_z",
+  "left_CEN_z",
+  "parietal_attention_z",
+  "limbic_cingulate_z"
+)
+# Initialize empty dataframe for results
+summary_results <- data.frame()
+
+for (region in regions) {
+  message("Running model for ", region)
+  dat <- na.omit(merged3[, c("Participant", "cluster_rads", region,
+                             "meanFD", "Current_Med_Psych", 
+                             "RADS_baseline", "COVID", "Age.at.V1", "sex")])
+  # Null model
+  m0 <- polr(cluster_rads ~ meanFD + Current_Med_Psych + RADS_baseline + COVID + Age.at.V1 + sex, data = dat)
+  # Full model
+  formula_full <- as.formula(paste("cluster_rads ~", region, "+ meanFD + Current_Med_Psych + RADS_baseline + COVID + Age.at.V1 + sex"))
+  m1 <- polr(formula_full, data = dat)
+  # Model comparison
+  model_comp <- anova(m0, m1, test = "Chisq")
+  p_diff <- model_comp$`Pr(Chi)`[2]
+  # Extract coefficients
+  ctable <- coef(summary(m1))
+  p_vals <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+  ctable <- cbind(ctable, "p value" = p_vals)
+  # Focus on the region variable
+  region_row <- ctable[grep(region, rownames(ctable)), , drop = FALSE]
+  # Compute odds ratio and CI
+  est <- region_row[1, "Value"]
+  se <- region_row[1, "Std. Error"]
+  OR <- exp(est)
+  CI_lower <- exp(est - 1.96 * se)
+  CI_upper <- exp(est + 1.96 * se)
+  p_val <- region_row[1, "p value"]
+  summary_results <- rbind(summary_results,
+                           data.frame(
+                             region = region,
+                             OR = OR,
+                             CI_lower = CI_lower,
+                             CI_upper = CI_upper,
+                             p = p_val,
+                             anova_p = p_diff
+                           ))
+}
+
+# Clean up
+summary_results <- summary_results %>%
+  mutate(sig = ifelse(p < 0.05, "*", ""),
+         region = factor(region, levels = regions))
+
+summary_results <- summary_results %>%
+  mutate(
+    p_fdr = p.adjust(anova_p, method = "BH"),
+    sig_fdr = ifelse(p_fdr < 0.05, "*", "")
+  )
+
+print(summary_results)
+
+# ---- Plot ----
+# Figure 4A
+figureRestingDep <- ggplot(summary_results, aes(x = region, y = OR, ymin = CI_lower, ymax = CI_upper)) +
+  geom_pointrange(aes(color = p < 0.05), size = 1) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  theme_minimal(base_size = 11) +  # Increase overall base font size
+  labs(
+    title = "Baseline Resting State Connectivity Predicting Depression Cluster Membership",
+    x = "Network",
+    y = "Odds Ratio (95% CI)",
+    color = "Significant (p < .05)"
+  ) +
+  theme(
+    plot.title = element_text(size = 14, hjust = 0.56),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+ggsave("figureRestingDep.png", figureRestingDep, device = "png", width = 10, height = 6, dpi = 300)
+
+#extracting parameters for significant ICA components
+m_dmn_mpfc_dep <- polr(cluster_rads ~ DMN_mPFC_z + meanFD + Current_Med_Psych + RADS_baseline + COVID + Age.at.V1 + sex, data = merged3)
+parameters(m_dmn_mpfc_dep, exponentiate = TRUE)
+m_right_CEN_fp_dep <- polr(cluster_rads ~ right_CEN_frontoparietal_z + meanFD + Current_Med_Psych + RADS_baseline + COVID + Age.at.V1 + sex, data = merged3)
+parameters(m_right_CEN_fp_dep, exponentiate = TRUE)
+```
+
+DTI and depression
+```{r pressure, echo=FALSE}
+tracts <- c(
+  "leftCC_z",
+  "rightCC_z",
+  "leftU_z",
+  "rightU_z",
+  "cfm_z"
+)
+summary_results <- data.frame()
+for (tract in tracts) {
+  message("Running model for ", tract)
+  dat <- na.omit(merged3[, c("Participant", "cluster_rads", tract,
+                             "motav.T1", "Current_Med_Psych", 
+                             "RADS_baseline", "COVID", "Age.at.V1", "sex")])
+  # Null model
+  m0 <- polr(cluster_rads ~ motav.T1 + Current_Med_Psych + RADS_baseline + COVID + Age.at.V1 + sex, data = dat)
+  # Full model
+  formula_full <- as.formula(paste("cluster_rads ~", tract, "+ motav.T1 + Current_Med_Psych + RADS_baseline + COVID + Age.at.V1 + sex"))
+  m1 <- polr(formula_full, data = dat)
+  # Model comparison
+  model_comp <- anova(m0, m1, test = "Chisq")
+  p_diff <- model_comp$`Pr(Chi)`[2]
+  # Extract coefficients
+  ctable <- coef(summary(m1))
+  p_vals <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+  ctable <- cbind(ctable, "p value" = p_vals)
+  # Focus on the tract variable
+  tract_row <- ctable[grep(tract, rownames(ctable)), , drop = FALSE]
+  # Compute odds ratio and CI
+  est <- tract_row[1, "Value"]
+  se <- tract_row[1, "Std. Error"]
+  OR <- exp(est)
+  CI_lower <- exp(est - 1.96 * se)
+  CI_upper <- exp(est + 1.96 * se)
+  p_val <- tract_row[1, "p value"]
+  summary_results <- rbind(summary_results,
+                           data.frame(
+                             tract = tract,
+                             OR = OR,
+                             CI_lower = CI_lower,
+                             CI_upper = CI_upper,
+                             p = p_val,
+                             anova_p = p_diff
+                           ))
+}
+# Clean up
+summary_results <- summary_results %>%
+  mutate(sig = ifelse(p < 0.05, "*", ""),
+         tract = factor(tract, levels = tracts))
+
+summary_results <- summary_results %>%
+  mutate(
+    p_fdr = p.adjust(anova_p, method = "BH"),
+    sig_fdr = ifelse(p_fdr < 0.05, "*", "")
+  )
+
+print(summary_results)
+# ---- Plot ----
+figureDTIdep <- ggplot(summary_results, aes(x = tract, y = OR, ymin = CI_lower, ymax = CI_upper)) +
+  geom_pointrange(aes(color = p < 0.05)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Baseline White Matter Integrity Predicting Depression Cluster Membership",
+    x = "Tract FA",
+    y = "Odds Ratio (95% CI)",
+    color = "Significant (p < .05)"
+  ) +
+  theme(
+    plot.title = element_text(size = 14, hjust = 0.3),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+
+ggsave("figureDTIdep.png", figureDTIdep, device = "png", width = 10, height = 6, dpi = 300)
+
+m_leftCC_dep <- polr(cluster_rads ~ leftCC_z + motav.T1 + Current_Med_Psych + RADS_baseline + COVID + Age.at.V1 + sex, data = merged3)
+m_leftCC_dep_minusCovid <- polr(cluster_rads ~ leftCC_z + motav.T1 + Current_Med_Psych + RADS_baseline + Age.at.V1 + sex, data = merged3)
+parameters(m_leftCC_dep, exponentiate = TRUE)
+```
+
+resting state and anxiety
+```{r pressure, echo=FALSE}
+regions <- c(
+  "SN_dACC_z",
+  "salience_insula_parietal_z",
+  "sgACC_mPFC_z",
+  "DMN_PCC_z",
+  "DMN_mPFC_z",
+  "right_CEN_frontoparietal_z",
+  "left_CEN_z",
+  "parietal_attention_z",
+  "limbic_cingulate_z"
+)
+# Initialize empty dataframe for results
+summary_results <- data.frame()
+for (region in regions) {
+  message("Running model for ", region)
+  dat <- na.omit(merged3[, c("Participant", "cluster_masc", region,
+                             "meanFD", "Current_Med_Psych", 
+                             "MASC_baseline", "COVID", "Age.at.V1", "sex")])
+  # Null model
+  m0 <- polr(cluster_masc ~ meanFD + Current_Med_Psych + MASC_baseline + COVID + Age.at.V1 + sex, data = dat)
+  # Full model
+  formula_full <- as.formula(paste("cluster_masc ~", region, "+ meanFD + Current_Med_Psych + MASC_baseline + COVID + Age.at.V1 + sex"))
+  m1 <- polr(formula_full, data = dat)
+  # Model comparison
+  model_comp <- anova(m0, m1, test = "Chisq")
+  p_diff <- model_comp$`Pr(Chi)`[2]
+  # Extract coefficients
+  ctable <- coef(summary(m1))
+  p_vals <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+  ctable <- cbind(ctable, "p value" = p_vals)
+  # Focus on the region variable
+  region_row <- ctable[grep(region, rownames(ctable)), , drop = FALSE]
+  # Compute odds ratio and CI
+  est <- region_row[1, "Value"]
+  se <- region_row[1, "Std. Error"]
+  OR <- exp(est)
+  CI_lower <- exp(est - 1.96 * se)
+  CI_upper <- exp(est + 1.96 * se)
+  p_val <- region_row[1, "p value"]
+  summary_results <- rbind(summary_results,
+                           data.frame(
+                             region = region,
+                             OR = OR,
+                             CI_lower = CI_lower,
+                             CI_upper = CI_upper,
+                             p = p_val,
+                             anova_p = p_diff
+                           ))
+}
+# Clean up
+summary_results <- summary_results %>%
+  mutate(sig = ifelse(p < 0.05, "*", ""),
+         region = factor(region, levels = regions))
+
+summary_results <- summary_results %>%
+  mutate(
+    p_fdr = p.adjust(anova_p, method = "BH"),
+    sig_fdr = ifelse(p_fdr < 0.05, "*", "")
+  )
+
+print(summary_results)
+
+# ---- Plot ----
+figureRestingAnx <- ggplot(summary_results, aes(x = region, y = OR, ymin = CI_lower, ymax = CI_upper)) +
+  geom_pointrange(aes(color = p < 0.05), size = 1) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  theme_minimal(base_size = 15) +  # Increase overall base font size
+  labs(
+    title = "Baseline Resting State Connectivity Predicting Anxiety Cluster Membership",
+    x = "Network",
+    y = "Odds Ratio (95% CI)",
+    color = "Significant (p < .05)"
+  ) +
+  theme(
+    plot.title = element_text(size = 14, hjust = 0.3),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+ggsave("figureRestingAnx.png", figureRestingAnx, device = "png", width = 10, height = 6, dpi = 300)
+#extracting parameters for significant ICA components
+m_par_att_anx <- polr(cluster_masc ~ parietal_attention_z + meanFD + Current_Med_Psych + MASC_baseline + COVID + Age.at.V1 + sex, data = merged3)
+parameters(m_par_att_anx, exponentiate = TRUE)
+```
+
+DTI and anxiety
+```{r pressure, echo=FALSE}
+tracts <- c(
+  "leftCC_z",
+  "rightCC_z",
+  "leftU_z",
+  "rightU_z", 
+  "cfm_z"
+)
+summary_results <- data.frame()
+for (tract in tracts) {
+  message("Running model for ", tract)
+  dat <- na.omit(merged3[, c("Participant", "cluster_masc", tract,
+                             "motav.T1", "Current_Med_Psych", 
+                             "MASC_baseline", "COVID", "Age.at.V1", "sex")])
+  # Null model
+  m0 <- polr(cluster_masc ~ motav.T1 + Current_Med_Psych + MASC_baseline + COVID + Age.at.V1 + sex, data = dat)
+  # Full model
+  formula_full <- as.formula(paste("cluster_masc ~", tract, "+ motav.T1 + Current_Med_Psych + MASC_baseline + COVID + Age.at.V1 + sex"))
+  m1 <- polr(formula_full, data = dat)
+  # Model comparison
+  model_comp <- anova(m0, m1, test = "Chisq")
+  p_diff <- model_comp$`Pr(Chi)`[2]
+  # Extract coefficients
+  ctable <- coef(summary(m1))
+  p_vals <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+  ctable <- cbind(ctable, "p value" = p_vals)
+  # Focus on the tract variable
+  tract_row <- ctable[grep(tract, rownames(ctable)), , drop = FALSE]
+  # Compute odds ratio and CI
+  est <- tract_row[1, "Value"]
+  se <- tract_row[1, "Std. Error"]
+  OR <- exp(est)
+  CI_lower <- exp(est - 1.96 * se)
+  CI_upper <- exp(est + 1.96 * se)
+  p_val <- tract_row[1, "p value"]
+  
+  summary_results <- rbind(summary_results,
+                           data.frame(
+                             tract = tract,
+                             OR = OR,
+                             CI_lower = CI_lower,
+                             CI_upper = CI_upper,
+                             p = p_val,
+                             anova_p = p_diff
+                           ))
+}
+# Clean up
+summary_results <- summary_results %>%
+  mutate(sig = ifelse(p < 0.05, "*", ""),
+         tract = factor(tract, levels = tracts))
+
+summary_results <- summary_results %>%
+  mutate(
+    p_fdr = p.adjust(anova_p, method = "BH"),
+    sig_fdr = ifelse(p_fdr < 0.05, "*", "")
+  )
+print(summary_results)
+# ---- Plot ----
+figureDTIanx <- ggplot(summary_results, aes(x = tract, y = OR, ymin = CI_lower, ymax = CI_upper)) +
+  geom_pointrange(aes(color = p < 0.05)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Baseline White Matter Integrity Predicting Anxiety Cluster Membership",
+    x = "Tract FA",
+    y = "Odds Ratio (95% CI)",
+    color = "Significant (p < .05)"
+  ) +
+  theme(
+    plot.title = element_text(size = 14, hjust = 0.5),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 14),
+    legend.title = element_text(size = 14),
+    legend.text = element_text(size = 12)
+  )
+ggsave("figureDTIanx.png", figureDTIanx, device = "png", width = 10, height = 6, dpi = 300)
+#extracting parameters for significant ICA components
+m_rightU_anx <- polr(cluster_masc ~ rightU_z + motav.T1 + Current_Med_Psych + MASC_baseline + COVID + Age.at.V1 + sex, data = merged3)
+parameters(m_rightU_anx, exponentiate = TRUE)
+```
+
+supplement
+AD and RD analyses for significant FA values
+```{r}
+supp_tracts_dep <- c(
+  "leftCC_ad_z",
+  "leftCC_rd_z"
+)
+summary_results <- data.frame()
+for (tract in supp_tracts_dep) {
+  message("Running model for ", tract)
+  dat <- na.omit(merged3[, c("Participant", "cluster_rads", tract,
+                             "motav.T1", "Current_Med_Psych", 
+                             "RADS_baseline", "COVID", "Age.at.V1", "sex")])
+  # Null model
+  m0 <- polr(cluster_rads ~ motav.T1 + Current_Med_Psych + RADS_baseline + COVID + Age.at.V1 + sex, data = dat)
+  # Full model
+  formula_full <- as.formula(paste("cluster_rads ~", tract, "+ motav.T1 + Current_Med_Psych + RADS_baseline + COVID + Age.at.V1 + sex"))
+  m1 <- polr(formula_full, data = dat)
+  # Model comparison
+  model_comp <- anova(m0, m1, test = "Chisq")
+  p_diff <- model_comp$`Pr(Chi)`[2]
+  # Extract coefficients
+  ctable <- coef(summary(m1))
+  p_vals <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+  ctable <- cbind(ctable, "p value" = p_vals)
+  # Focus on the tract variable
+  tract_row <- ctable[grep(tract, rownames(ctable)), , drop = FALSE]
+  # Compute odds ratio and CI
+  est <- tract_row[1, "Value"]
+  se <- tract_row[1, "Std. Error"]
+  OR <- exp(est)
+  CI_lower <- exp(est - 1.96 * se)
+  CI_upper <- exp(est + 1.96 * se)
+  p_val <- tract_row[1, "p value"]
+  summary_results <- rbind(summary_results,
+                           data.frame(
+                             tract = tract,
+                             OR = OR,
+                             CI_lower = CI_lower,
+                             CI_upper = CI_upper,
+                             p = p_val,
+                             anova_p = p_diff
+                           ))
+}
+# Clean up
+summary_results <- summary_results %>%
+  mutate(sig = ifelse(p < 0.05, "*", ""),
+         tract = factor(tract, levels = supp_tracts_dep))
+print(summary_results)
+
+supp_tracts_anx <- c(
+  "rightU_ad_z",
+  "rightU_rd_z"
+)
+summary_results <- data.frame()
+for (tract in supp_tracts_anx) {
+  message("Running model for ", tract)
+  dat <- na.omit(merged3[, c("Participant", "cluster_masc", tract,
+                             "motav.T1", "Current_Med_Psych", 
+                             "MASC_baseline", "COVID", "Age.at.V1", "sex")])
+  # Null model
+  m0 <- polr(cluster_masc ~ motav.T1 + Current_Med_Psych + MASC_baseline + COVID + Age.at.V1 + sex, data = dat)
+  # Full model
+  formula_full <- as.formula(paste("cluster_masc ~", tract, "+ motav.T1 + Current_Med_Psych + MASC_baseline + COVID + Age.at.V1 + sex"))
+  m1 <- polr(formula_full, data = dat)
+  # Model comparison
+  model_comp <- anova(m0, m1, test = "Chisq")
+  p_diff <- model_comp$`Pr(Chi)`[2]
+  # Extract coefficients
+  ctable <- coef(summary(m1))
+  p_vals <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+  ctable <- cbind(ctable, "p value" = p_vals)
+  # Focus on the tract variable
+  tract_row <- ctable[grep(tract, rownames(ctable)), , drop = FALSE]
+  # Compute odds ratio and CI
+  est <- tract_row[1, "Value"]
+  se <- tract_row[1, "Std. Error"]
+  OR <- exp(est)
+  CI_lower <- exp(est - 1.96 * se)
+  CI_upper <- exp(est + 1.96 * se)
+  p_val <- tract_row[1, "p value"]
+  summary_results <- rbind(summary_results,
+                           data.frame(
+                             tract = tract,
+                             OR = OR,
+                             CI_lower = CI_lower,
+                             CI_upper = CI_upper,
+                             p = p_val,
+                             anova_p = p_diff
+                           ))
+}
+# Clean up
+summary_results <- summary_results %>%
+  mutate(sig = ifelse(p < 0.05, "*", ""),
+         tract = factor(tract, levels = supp_tracts_anx))
+print(summary_results)
+
+```
+
+
+

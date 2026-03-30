@@ -1,0 +1,267 @@
+---
+title: "LCGA_finalCode_1123"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(lcmm)
+library(ggplot2)
+library("dplyr")
+library("readr")
+library(stringr)
+library(flexmix)
+```
+
+figure 2: importing longform symptom data
+```{r import}
+lcgadir <- "/Users/shiyinliu/Desktop/CANDYLab/LCGA"
+rads <- read_csv(file.path(lcgadir, "K01_RADS_long_mdd.csv")) #N = 68
+masc <- read_csv(file.path(lcgadir, "K01_MASC_long_mdd.csv")) #N = 68
+```
+
+visualizing the data
+```{r}
+rads_v <- rads
+rads_v$Participant <- factor(rads_v$Participant) #unique participant N = 68
+ggplot(data = rads_v, aes(x = weeks_passed, y = RADS_total, group = Participant, color = Participant)) + geom_point() + geom_line()
+
+masc_v <- masc
+masc_v$Participant <- factor(masc_v$Participant) #unique participant N = 68
+ggplot(data = masc_v, aes(x = weeks_passed, y = MASC_total, group = Participant, color = Participant)) + geom_point() + geom_line()
+
+```
+
+
+latent class growth modeling with flexmix 
+following this tutorial: https://www.youtube.com/watch?v=cqnpN1k1mPk
+```{r}
+rads_clean <- na.omit(rads) #need to remove NAs for function to work
+set.seed(22222)
+lcga_fit_rads <- stepFlexmix(. ~ .|Participant, 
+                       k = 1:5, 
+                       nrep = 300, #issue: prone to local optima -- 100 different starting values
+                       model = FLXMRglmfix(RADS_total ~ weeks_passed, varFix = T), 
+                       data = rads_clean, 
+                       control = list(iter.max = 500, minprior = 0) #tries at most 500 steps -- increase if no convergence
+                       )
+lcga_fit_rads
+#  iter converged k k0    logLik      AIC      BIC      ICL
+#1    2      TRUE 1  1 -1623.930	3253.860	3265.849	3265.849
+#2    6      TRUE 2  2 -1529.762	3071.523	3095.502	3101.044
+#3   13      TRUE 3  3 -1506.517	3031.034	3067.002	3085.304
+#4   23      TRUE 4  4 -1493.966	3011.933	3059.890	3075.066
+#5   27      TRUE 5  5 -1487.988	3005.976	3065.923	3086.156
+#tendency to identify too many clusters
+#inspect 2 and 4 cluster solutions to determine best fit 
+
+lcga_rads_2 <- getModel(lcga_fit_rads, which = 2)
+lcga_rads_3 <- getModel(lcga_fit_rads, which = 3)
+lcga_rads_4 <- getModel(lcga_fit_rads, which = 4)
+lcga_rads_5 <- getModel(lcga_fit_rads, which = 5)
+summary(lcga_rads_2)
+summary(lcga_rads_3)
+summary(lcga_rads_4)
+parameters(lcga_rads_2)
+parameters(lcga_rads_3)
+parameters(lcga_rads_4)
+plot(lcga_rads_2)
+plot(lcga_rads_3)
+plot(lcga_rads_4)
+
+posterior(lcga_rads_2)#likelihood for each datapoint/subject to below to each cluster 
+posterior(lcga_rads_3)
+posterior(lcga_rads_4)
+
+#test results
+summary(refit(lcga_rads_2))
+summary(refit(lcga_rads_3))
+summary(refit(lcga_rads_4))
+
+#add cluster membership to dataset
+rads_cluster2 <- rads_clean
+rads_cluster2$cluster_rads <- factor(clusters(lcga_rads_2))
+head(rads_cluster2)
+participant_class_2 <- rads_cluster2 %>%
+  dplyr::select(Participant, cluster_rads) %>%
+  dplyr::distinct()
+table(participant_class_2$cluster_rads)
+
+rads_cluster3 <- rads_clean
+rads_cluster3$cluster_rads <- factor(clusters(lcga_rads_3))
+head(rads_cluster3)
+
+participant_class_3 <- rads_cluster3 %>%
+  dplyr::select(Participant, cluster_rads) %>%
+  dplyr::distinct()
+table(participant_class_3$cluster_rads)
+
+rads_cluster4 <- rads_clean
+rads_cluster4$cluster_rads <- factor(clusters(lcga_rads_4))
+head(rads_cluster4)
+participant_class_4 <- rads_cluster4 %>%
+  dplyr::select(Participant, cluster_rads) %>%
+  dplyr::distinct()
+table(participant_class_4$cluster_rads)
+
+rads_cluster5 <- rads_clean
+rads_cluster5$cluster_rads <- factor(clusters(lcga_rads_5))
+head(rads_cluster5)
+
+participant_class_5 <- rads_cluster5 %>%
+  dplyr::select(Participant, cluster_rads) %>%
+  dplyr::distinct()
+table(participant_class_5$cluster_rads)
+
+#plot cluster membership
+ggplot(data = rads_cluster2, aes(x = weeks_passed, y = RADS_total, group = Participant, color = cluster_rads)) + geom_smooth(method = lm, show.legend = T, se = F)
+ggplot(data = rads_cluster3, aes(x = weeks_passed, y = RADS_total, group = Participant, color = cluster_rads)) + geom_smooth(method = lm, show.legend = T, se = F)
+ggplot(data = rads_cluster4, aes(x = weeks_passed, y = RADS_total, group = Participant, color = cluster_rads)) + geom_smooth(method = lm, show.legend = T, se = F)
+ggplot(data = rads_cluster5, aes(x = weeks_passed, y = RADS_total, group = Participant, color = cluster_rads)) + geom_smooth(method = lm, show.legend = T, se = F)
+#two or three cluster solution probably better
+
+ggplot(data = rads_cluster3, aes(x = weeks_passed, y = RADS_total, 
+                                 group = Participant, color = factor(cluster_rads))) +
+  geom_smooth(method = "lm", show.legend = TRUE, se = FALSE, size = 1.2) +
+  scale_color_manual(
+    name = "Cluster",
+    values = c("#1B9E77", "#D95F02", "#7570B3"),
+    labels = c("1. Maintenance", "2. Slight Improvement", "3. Large Improvement")
+  ) +
+  theme_minimal(base_size = 16) +
+  labs(
+    title = "RADS Trajectories by Cluster",
+    x = "Weeks Passed",
+    y = "RADS Total Score"
+  ) +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.title = element_text(size = 15),
+    legend.text = element_text(size = 13)
+  )
+
+
+#write.csv(rads_cluster2, file.path(lcgadir, "K01_rads_cluster2.csv"), row.names = FALSE)
+#write.csv(rads_cluster3, file.path(lcgadir, "K01_rads_cluster3.csv"), row.names = FALSE)
+#write.csv(rads_cluster4, file.path(lcgadir, "K01_rads_cluster4.csv"), row.names = FALSE)
+#write.csv(rads_cluster5, file.path(lcgadir, "K01_rads_cluster5.csv"), row.names = FALSE)
+```
+
+
+masc clustering
+
+```{r}
+masc_clean <- na.omit(masc) #need to remove NAs for function to work
+set.seed(22222)
+lcga_fit_masc <- stepFlexmix(. ~ .|Participant, 
+                       k = 1:5, 
+                       nrep = 300, #issue: prone to local optima -- 100 different starting values
+                       model = FLXMRglmfix(MASC_total ~ weeks_passed, varFix = T), 
+                       data = masc_clean, 
+                       control = list(iter.max = 500, minprior = 0) #tries at most 500 steps -- increase if no convergence
+                       )
+lcga_fit_masc
+#  iter converged k k0    logLik      AIC      BIC      ICL
+#1    2      TRUE 1  1 -1644.410	3294.820	3306.624	3306.624
+#2    6      TRUE 2  2 -1508.013 3028.027 3051.636 3054.747
+#3   11      TRUE 3  3 -1488.841 2995.682 3031.096 3048.629
+#4   21      TRUE 4  4 -1470.569 2965.137 3012.356 3027.169
+#5   34      TRUE 5  5 -1460.451 2950.902 3009.926 3028.148
+
+lcga_masc_2 <- getModel(lcga_fit_masc, which = 2)
+lcga_masc_3 <- getModel(lcga_fit_masc, which = 3)
+lcga_masc_4 <- getModel(lcga_fit_masc, which = 4)
+lcga_masc_5 <- getModel(lcga_fit_masc, which = 5)
+summary(lcga_masc_2)
+summary(lcga_masc_3)
+summary(lcga_masc_4)
+parameters(lcga_masc_2)
+parameters(lcga_masc_3)
+parameters(lcga_masc_4)
+plot(lcga_masc_2)
+plot(lcga_masc_3)
+plot(lcga_masc_4)
+
+posterior(lcga_masc_2)#likelihood for each datapoint/subject to belong to each cluster 
+posterior(lcga_masc_4)
+
+#test results
+summary(refit(lcga_masc_2))
+summary(refit(lcga_masc_3))
+summary(refit(lcga_masc_4))
+
+#add cluster membership to dataset
+masc_cluster2 <- masc_clean
+masc_cluster2$cluster_masc <- factor(clusters(lcga_masc_2))
+head(masc_cluster2)
+participant_class_2 <- masc_cluster2 %>%
+  dplyr::select(Participant, cluster_masc) %>%
+  dplyr::distinct()
+table(participant_class_2$cluster_masc)
+
+masc_cluster3 <- masc_clean
+masc_cluster3$cluster_masc <- factor(clusters(lcga_masc_3))
+head(masc_cluster3)
+participant_class_3 <- masc_cluster3 %>%
+  dplyr::select(Participant, cluster_masc) %>%
+  dplyr::distinct()
+table(participant_class_3$cluster_masc)
+
+masc_cluster4 <- masc_clean
+masc_cluster4$cluster_masc <- factor(clusters(lcga_masc_4))
+head(masc_cluster4)
+participant_class_4 <- masc_cluster4 %>%
+  dplyr::select(Participant, cluster_masc) %>%
+  dplyr::distinct()
+table(participant_class_4$cluster_masc)
+
+masc_cluster5 <- masc_clean
+masc_cluster5$cluster_masc <- factor(clusters(lcga_masc_5))
+head(masc_cluster5)
+participant_class_5 <- masc_cluster5 %>%
+  dplyr::select(Participant, cluster_masc) %>%
+  dplyr::distinct()
+table(participant_class_5$cluster_masc)
+
+#plot cluster membership
+ggplot(data = masc_cluster2, aes(x = weeks_passed, y = MASC_total, group = Participant, color = cluster_masc)) + 
+  geom_smooth(method = lm, show.legend = TRUE, se = FALSE)
+ggplot(data = masc_cluster3, aes(x = weeks_passed, y = MASC_total, group = Participant, color = cluster_masc)) + 
+  geom_smooth(method = lm, show.legend = TRUE, se = FALSE)
+ggplot(data = masc_cluster4, aes(x = weeks_passed, y = MASC_total, group = Participant, color = cluster_masc)) + 
+  geom_smooth(method = lm, show.legend = TRUE, se = FALSE)
+ggplot(data = masc_cluster5, aes(x = weeks_passed, y = MASC_total, group = Participant, color = cluster_masc)) + 
+  geom_smooth(method = lm, show.legend = TRUE, se = FALSE)
+#two or three cluster solution probably better
+
+ggplot(data = masc_cluster3, aes(x = weeks_passed, y = MASC_total, 
+                                 group = Participant, color = factor(cluster_masc))) + 
+  geom_smooth(method = "lm", show.legend = TRUE, se = FALSE, size = 1.2) +
+  scale_color_manual(
+    name = "Cluster",
+    values = c("#1B9E77", "#D95F02", "#7570B3"),
+    labels = c("1. High", "2. Mid", "3. Low")
+  ) +
+  theme_minimal(base_size = 16) +
+  labs(
+    title = "MASC Trajectories by Cluster",
+    x = "Weeks Passed",
+    y = "MASC Total Score"
+  ) +
+  theme(
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 16),
+    axis.text = element_text(size = 14),
+    legend.title = element_text(size = 15),
+    legend.text = element_text(size = 13)
+  )
+
+#write.csv(masc_cluster2, file.path(lcgadir, "K01_masc_cluster2.csv"), row.names = FALSE)
+#write.csv(masc_cluster3, file.path(lcgadir, "K01_masc_cluster3.csv"), row.names = FALSE)
+#write.csv(masc_cluster4, file.path(lcgadir, "K01_masc_cluster4.csv"), row.names = FALSE)
+#write.csv(masc_cluster5, file.path(lcgadir, "K01_masc_cluster5.csv"), row.names = FALSE)
+
+```
+
+
